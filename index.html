@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Responsive Block Puzzle</title>
+    <style>
+        :root { 
+            --bg: #05070a; 
+            --grid-bg: #1e293b; 
+            /* セルサイズ：PCでは大きく、スマホでは画面幅に合わせる */
+            --cell-size: min(10vh, 55px, 11vw); 
+            --gap: 4px; 
+            --accent: #22d3ee; 
+        }
+        
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+        body {
+            background-color: var(--bg); color: white; font-family: 'Segoe UI', Tahoma, sans-serif;
+            display: flex; flex-direction: column; align-items: center; margin: 0;
+            overflow: hidden; touch-action: none; user-select: none;
+            height: 100vh;
+        }
+
+        /* スコアのサイズをPCでも適切に */
+        #score { 
+            font-size: min(80px, 12vw); 
+            font-weight: 900; 
+            color: var(--accent); 
+            margin: 20px 0 10px;
+            line-height: 1;
+        }
+        
+        #game-board {
+            display: grid; grid-template-columns: repeat(8, var(--cell-size));
+            grid-template-rows: repeat(8, var(--cell-size)); gap: var(--gap);
+            background-color: #334155; padding: var(--gap); border-radius: 12px;
+            box-shadow: 0 15px 40px rgba(0,0,0,0.6);
+        }
+
+        .cell { width: var(--cell-size); height: var(--cell-size); background-color: var(--grid-bg); border-radius: 6px; }
+        .cell.preview { background-color: rgba(255, 255, 255, 0.35) !important; box-shadow: inset 0 0 12px white; }
+        .cell.filled { transition: transform 0.1s; border: 1px solid rgba(255,255,255,0.1); }
+
+        #hand {
+            display: flex; justify-content: space-around; width: 100%; max-width: 500px;
+            height: 160px; margin-top: auto; margin-bottom: 30px;
+            background: rgba(255,255,255,0.03); border-radius: 24px; align-items: center;
+            padding: 10px;
+        }
+
+        .slot { width: 30%; height: 120px; display: flex; align-items: center; justify-content: center; position: relative; }
+        
+        /* 手元のブロック：PCでも見えやすいサイズ（30px）に微増 */
+        .piece { display: grid; gap: 3px; cursor: grab; position: absolute; }
+        .p-cell { width: 28px; height: 28px; border-radius: 4px; }
+        
+        /* ドラッグ中のブロック：ボードのセルサイズと完全に一致させる */
+        .dragging { z-index: 1000; }
+        .dragging .p-cell { 
+            width: var(--cell-size); 
+            height: var(--cell-size); 
+            border-radius: 6px; 
+        }
+
+        #overlay {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.9);
+            display: none; flex-direction: column; justify-content: center; align-items: center; z-index: 9999;
+        }
+        button { padding: 18px 50px; font-size: 24px; background: var(--accent); border: none; border-radius: 50px; font-weight: bold; cursor: pointer; color: #000; }
+    </style>
+</head>
+<body>
+
+    <div id="score">0</div>
+    <div id="game-board"></div>
+    
+    <div id="hand">
+        <div class="slot" id="slot-0"></div>
+        <div class="slot" id="slot-1"></div>
+        <div class="slot" id="slot-2"></div>
+    </div>
+
+    <div id="overlay">
+        <h2 style="font-size: 50px; margin: 0;">Game Over</h2>
+        <p id="final-score" style="font-size: 28px; opacity: 0.8; margin: 20px 0;"></p>
+        <button onclick="location.reload()">TRY AGAIN</button>
+    </div>
+
+<script>
+    const BOARD_SIZE = 8;
+    const boardEl = document.getElementById('game-board');
+    const scoreEl = document.getElementById('score');
+    let board = Array(BOARD_SIZE).fill().map(() => Array(BOARD_SIZE).fill(0));
+    let score = 0, pieces = [null, null, null];
+
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    function beep(f, d=0.06) {
+        const o=audioCtx.createOscillator(), g=audioCtx.createGain();
+        o.frequency.value=f; g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime+d);
+        o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime+d);
+    }
+
+    const SHAPES = [
+        {s:[[1,1],[1,1]], c:'#f87171'}, {s:[[1,1,1,1]], c:'#22d3ee'}, {s:[[1,1,1],[0,1,0]], c:'#fbbf24'},
+        {s:[[1,1,0],[0,1,1]], c:'#4ade80'}, {s:[[1,1,1]], c:'#fb923c'}, {s:[[1]], c:'#f8fafc'}, {s:[[1,0],[1,1]], c:'#a78bfa'}
+    ];
+
+    function init() {
+        boardEl.innerHTML = '';
+        for(let i=0; i<64; i++) boardEl.appendChild(document.createElement('div')).className='cell';
+        spawn();
+    }
+
+    function spawn() {
+        for(let i=0; i<3; i++) {
+            pieces[i] = JSON.parse(JSON.stringify(SHAPES[Math.floor(Math.random()*SHAPES.length)]));
+            drawPiece(i);
+        }
+        if(isGameOver()) showOver();
+    }
+
+    function drawPiece(i) {
+        const slot = document.getElementById(`slot-${i}`);
+        slot.innerHTML = ''; if(!pieces[i]) return;
+        const p = document.createElement('div');
+        p.className = 'piece';
+        p.style.gridTemplateColumns = `repeat(${pieces[i].s[0].length}, 28px)`;
+        pieces[i].s.forEach(row => row.forEach(v => {
+            const c = document.createElement('div'); c.className='p-cell';
+            if(v) c.style.backgroundColor = pieces[i].c;
+            p.appendChild(c);
+        }));
+        p.onpointerdown = (e) => onGrab(e, i, p);
+        slot.appendChild(p);
+    }
+
+    function onGrab(e, idx, el) {
+        if(audioCtx.state==='suspended') audioCtx.resume();
+        const shape = pieces[idx].s;
+        const rows = shape.length, cols = shape[0].length;
+        
+        // ドラッグ開始時にサイズをボードのセルに完全同期
+        el.classList.add('dragging');
+        el.style.gridTemplateColumns = `repeat(${cols}, var(--cell-size))`;
+        el.style.gap = 'var(--gap)';
+        
+        const cellSize = boardEl.children[0].offsetWidth;
+        const gapSize = 4;
+
+        const onMove = (ev) => {
+            el.style.position = 'fixed';
+            // PC/スマホ両対応のオフセット。PCなら指の上、マウスならカーソル位置
+            const targetX = ev.clientX;
+            const targetY = ev.clientY - (ev.pointerType === 'touch' ? 100 : 50);
+
+            // ブロックの物理的な中心がターゲットに来るように配置
+            el.style.left = (targetX - (cols * cellSize + (cols-1)*gapSize) / 2) + 'px';
+            el.style.top = (targetY - (rows * cellSize + (rows-1)*gapSize) / 2) + 'px';
+
+            const pos = getGridPos(targetX, targetY, rows, cols, cellSize, gapSize);
+            clearPreview();
+            if(pos && canPlace(shape, pos.r, pos.c)) showPreview(shape, pos.r, pos.c);
+        };
+
+        const onRelease = (ev) => {
+            const targetY = ev.clientY - (ev.pointerType === 'touch' ? 100 : 50);
+            const pos = getGridPos(ev.clientX, targetY, rows, cols, cellSize, gapSize);
+            
+            if(pos && tryPlace(idx, pos.r, pos.c)) {
+                document.getElementById(`slot-${idx}`).innerHTML = '';
+                pieces[idx] = null;
+                beep(600);
+                checkClear();
+                if(pieces.every(p => p === null)) spawn();
+                else if(isGameOver()) showOver();
+            } else {
+                el.classList.remove('dragging');
+                el.style = ''; drawPiece(idx);
+            }
+            clearPreview();
+            window.onpointermove = window.onpointerup = null;
+        };
+
+        window.onpointermove = onMove;
+        window.onpointerup = onRelease;
+        onMove(e);
+    }
+
+    function getGridPos(x, y, rows, cols, cellSize, gapSize) {
+        const b = boardEl.getBoundingClientRect();
+        const step = cellSize + gapSize;
+        // 判定基準：ドラッグ中のブロックの左上端
+        const r = Math.round((y - b.top - (rows * step / 2)) / step);
+        const c = Math.round((x - b.left - (cols * step / 2)) / step);
+        if(r >= 0 && r + rows <= 8 && c >= 0 && c + cols <= 8) return {r, c};
+        return null;
+    }
+
+    function clearPreview() {
+        document.querySelectorAll('.cell.preview').forEach(el => el.classList.remove('preview'));
+    }
+
+    function showPreview(s, r, c) {
+        s.forEach((row, dr) => row.forEach((v, dc) => {
+            if(v) boardEl.children[(r+dr)*8 + (c+dc)].classList.add('preview');
+        }));
+    }
+
+    function canPlace(s, r, c) {
+        return s.every((row, dr) => row.every((v, dc) => !v || !board[r+dr][c+dc]));
+    }
+
+    function tryPlace(idx, r, c) {
+        if(!canPlace(pieces[idx].s, r, c)) return false;
+        pieces[idx].s.forEach((row, dr) => row.forEach((v, dc) => {
+            if(v) {
+                board[r+dr][c+dc] = 1;
+                const cell = boardEl.children[(r+dr)*8 + c+dc];
+                cell.className = 'cell filled';
+                cell.style.backgroundColor = pieces[idx].c;
+                cell.animate([{transform:'scale(1.2)'},{transform:'scale(1)'}], 100);
+            }
+        }));
+        return true;
+    }
+
+    function checkClear() {
+        let rs = [], cs = [];
+        for(let i=0; i<8; i++) {
+            if(board[i].every(v => v === 1)) rs.push(i);
+            if(board.every(row => row[i] === 1)) cs.push(i);
+        }
+        if(rs.length || cs.length) {
+            rs.forEach(r => { for(let i=0; i<8; i++) board[r][i] = 0; });
+            cs.forEach(c => { for(let i=0; i<8; i++) board[i][c] = 0; });
+            score += (rs.length + cs.length) * 10;
+            scoreEl.innerText = score;
+            beep(900, 0.1);
+            setTimeout(() => {
+                board.forEach((row, r) => row.forEach((v, c) => {
+                    const el = boardEl.children[r*8+c];
+                    if(!v) { el.className='cell'; el.style.backgroundColor=''; }
+                }));
+            }, 100);
+        }
+    }
+
+    function isGameOver() {
+        return !pieces.some(p => {
+            if(!p) return false;
+            for(let r=0; r<=8-p.s.length; r++)
+                for(let c=0; c<=8-p.s[0].length; c++)
+                    if(canPlace(p.s, r, c)) return true;
+            return false;
+        }) && pieces.some(p => p !== null);
+    }
+
+    function showOver() {
+        document.getElementById('final-score').innerText = `TOTAL SCORE: ${score}`;
+        document.getElementById('overlay').style.display = 'flex';
+    }
+
+    init();
+</script>
+</body>
+</html>
